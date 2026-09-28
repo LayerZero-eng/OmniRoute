@@ -209,10 +209,10 @@ describe("catalog usableOnly gating", () => {
             });
             return Promise.resolve({ dispose: async () => {} });
           },
-          },
-          model: {
-            transform: () => Promise.resolve({ dispose: async () => {} }),
-          },
+        },
+        model: {
+          transform: () => Promise.resolve({ dispose: async () => {} }),
+        },
         integration: { transform: () => Promise.resolve({ dispose: async () => {} }) },
       });
       const { mkdtempSync } = await import("node:fs");
@@ -252,10 +252,7 @@ describe("catalog usableOnly gating", () => {
         status: 200,
         statusText: "OK",
         json: async () => ({
-          data: [
-            { id: "m-tools", capabilities: { tool_calling: true } },
-            { id: "m-plain" },
-          ],
+          data: [{ id: "m-tools", capabilities: { tool_calling: true } }, { id: "m-plain" }],
         }),
       };
     }) as typeof fetch;
@@ -272,7 +269,7 @@ describe("catalog usableOnly gating", () => {
       const added: unknown[] = [];
       const catalogCallbacks: Array<(draft: unknown) => Promise<void>> = [];
       await plugin.setup({
-        options: { baseURL: "https://gw.example.com", providerId: "tools-drop" },
+        options: { baseURL: "https://gw.example.com", providerId: "tools-drop", apiKey: "k" },
         provider: {
           transform: (cb: (editor: { add: (input: unknown) => void }) => void) => {
             catalogCallbacks.push(async () => {

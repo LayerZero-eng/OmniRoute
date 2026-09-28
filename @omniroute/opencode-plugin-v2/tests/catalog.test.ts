@@ -423,13 +423,13 @@ describe("catalog capability presets", () => {
         fetcher: async () => [{ id: "m1" }],
         enrichmentFetcher: async () => new Map([["m1", { freeType: "keyless" as const }]]),
         combosFetcher: async () => [
-          { id: "c1", name: "C1", models: [{ kind: "model", model: "m1" }] },
+          { id: "combo-a", name: "Combo A", models: [{ kind: "model", model: "m1" }] },
         ],
       }
     );
     assert.equal(res.models, 1);
     assert.equal(res.combos, 0);
-    assert.ok(!draft.models.has("omniroute/c1"));
+    assert.ok(!draft.models.has("omniroute/combo-a"));
   });
 
   it("toolsOnly keeps only tool-calling models", async () => {
