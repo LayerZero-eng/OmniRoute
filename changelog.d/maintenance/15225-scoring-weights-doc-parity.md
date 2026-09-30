@@ -1,0 +1,1 @@
+- **docs:** pin the Auto-Combo scoring diagram weights to the code with a parity test that compares each diagram weight against the scoring defaults ([#14804](https://github.com/diegosouzapw/OmniRoute/pull/14804))
