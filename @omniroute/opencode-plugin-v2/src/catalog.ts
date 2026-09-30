@@ -1,4 +1,15 @@
 import type { Model, Provider } from "@opencode/plugin";
+import {
+  buildProviderResolve,
+  compileProviderFilter,
+  passesProviderAutoCombo,
+  passesProviderCombo,
+  passesProviderFilter,
+  warnNoVocabulary,
+  warnUnknownProviders,
+  type ProviderFilter,
+  type ProviderResolve,
+} from "./provider-filter.js";
 import type { LegacyModel } from "./legacy-model.js";
 import {
   isHttpUrl,
@@ -61,6 +72,7 @@ export interface ResolvedOptions {
   apiFormat?: ApiFormatV2;
   visibleModels?: string[];
   hiddenModels?: string[];
+  providersAllow?: string[];
   usableOnly: boolean;
   enrichment?: OmniRouteEnrichmentMap | boolean;
   /**
@@ -169,9 +181,7 @@ export function legacyToStable(
     capabilities: { tools: m.capabilities.toolcall, input, output },
     variants,
     time: { released: Number.isNaN(parsed) ? 0 : parsed },
-    cost: [
-      { input: m.cost.input, output: m.cost.output, cache: { ...m.cost.cache } },
-    ],
+    cost: [{ input: m.cost.input, output: m.cost.output, cache: { ...m.cost.cache } }],
     status: m.status,
     enabled: true,
     limit: { ...m.limit },
@@ -450,10 +460,16 @@ interface PublishContext {
   hiddenFilter: ReturnType<typeof compileModelListFilter>;
   usable: ReturnType<typeof usableProviderAliasSet> | undefined;
   canonicalToAlias: ReturnType<typeof buildCanonicalToAliasMap>;
+  providerFilter: ProviderFilter | undefined;
+  providerResolve: ProviderResolve | undefined;
   combosFetcher: CatalogFetchers["combos"] | undefined;
   combosTimeout: number;
   /** Shared with the auto-combos pass: one collision warning per key, per run. */
   warnedCombos: Set<string>;
+  /** Run-scoped provider warnings (unknown / empty-result), separate from combo keys. */
+  providerWarned: Set<string>;
+  /** Entries the provider filter alone rejected (drives the empty-result guard). */
+  providerDropped: { count: number };
   cacheKey: string;
 }
 
@@ -481,9 +497,13 @@ async function publishCombos(ctx: PublishContext): Promise<number | undefined> {
     hiddenFilter,
     usable,
     canonicalToAlias,
+    providerFilter,
+    providerResolve,
     combosFetcher,
     combosTimeout,
     warnedCombos,
+    providerWarned,
+    providerDropped,
     cacheKey,
   } = ctx;
   let rawCombos: OmniRouteRawCombo[];
@@ -512,6 +532,10 @@ async function publishCombos(ctx: PublishContext): Promise<number | undefined> {
     // Deny wins for combos too: a user who hides an id expects it gone from
     // the picker whether it is a model or a combo built on it.
     if (hiddenFilter && passesComboAllowlist(combo, hiddenFilter)) return false;
+    if (!passesProviderCombo(combo, providerFilter, providerResolve)) {
+      if (providerFilter) providerDropped.count += 1;
+      return false;
+    }
     return true;
   });
   const resolvedByName = new Map<string, LegacyModel>();
@@ -702,6 +726,35 @@ export async function collectCatalog(
     log
   );
 
+  // Provider allowlist (same seam as the allowlists above, applied last):
+  // compile once, resolve alias<->canonical once via the usable pass, then
+  // one predicate per collection point. `buildCanonicalToAliasMap` returns
+  // canonical->alias; the resolve table needs the inverse alias->canonical.
+  const warnedCombos = opts.collisionWarned ?? new Set<string>();
+  const providerWarned = new Set<string>();
+  const providerFilter = compileProviderFilter(opts.providersAllow);
+  let providerResolve: ProviderResolve | undefined;
+  if (providerFilter) {
+    const pairs: Array<{ alias?: string; canonical?: string }> = [];
+    for (const entry of enrichment.values()) {
+      pairs.push({ alias: entry.providerAlias, canonical: entry.providerCanonical });
+    }
+    for (const [canonical, alias] of canonicalToAlias) {
+      pairs.push({ alias, canonical });
+    }
+    providerResolve = buildProviderResolve(pairs, usable?.canonicals);
+    if (providerResolve.known.size === 0)
+      warnNoVocabulary(providerFilter, providerResolve.known, providerWarned, log, warnedCombos);
+    else
+      warnUnknownProviders(
+        providerFilter,
+        providerResolve.known,
+        providerWarned,
+        log,
+        warnedCombos
+      );
+  }
+
   const rawModelById = new Map<string, OmniRouteRawModelEntry>();
   for (const entry of rawModels) {
     if (entry.id) rawModelById.set(entry.id, entry);
@@ -714,11 +767,16 @@ export async function collectCatalog(
   const publishedModelIds = new Map<string, string>();
   const collected = new Map<string, LegacyModel>();
   let modelCount = 0;
+  let providerDroppedCount = 0;
   for (const entry of rawModels) {
     if (!entry.id) continue;
     if (canonicalDedup.has(entry.id)) continue;
     if (usable && !isUsableRawModelId(entry.id, usable)) continue;
     if (!passesModelAllowlist(entry.id, visibleFilter, hiddenFilter)) continue;
+    if (!passesProviderFilter(entry.id, providerFilter, providerResolve)) {
+      providerDroppedCount += 1;
+      continue;
+    }
     const mapped = mapRawModelToModelV2(entry, {
       providerId: X,
       baseURL: opts.baseURL,
@@ -735,7 +793,6 @@ export async function collectCatalog(
     modelCount += 1;
   }
 
-  const warnedCombos = opts.collisionWarned ?? new Set<string>();
   const cacheKey = `${opts.baseURL}::${opts.providerId}`;
   const comboCount = await publishCombos({
     opts,
@@ -750,9 +807,20 @@ export async function collectCatalog(
     hiddenFilter,
     usable,
     canonicalToAlias,
+    providerFilter,
+    providerResolve,
     combosFetcher,
     combosTimeout,
     warnedCombos,
+    providerWarned,
+    providerDropped: {
+      get count() {
+        return providerDroppedCount;
+      },
+      set count(v: number) {
+        providerDroppedCount = v;
+      },
+    },
     cacheKey,
   });
   if (comboCount === undefined)
@@ -780,7 +848,10 @@ export async function collectCatalog(
     log.warn(
       `[omniroute-v2] auto combos fetch failed, falling back to models+combos catalog: ${err instanceof Error ? err.message : String(err)}`
     );
-    return { entries: collected, counts: { models: modelCount, combos: comboCount, autoCombos: 0 } };
+    return {
+      entries: collected,
+      counts: { models: modelCount, combos: comboCount, autoCombos: 0 },
+    };
   }
 
   let autoComboCount = 0;
@@ -792,6 +863,10 @@ export async function collectCatalog(
     // it. They used to skip both filters entirely.
     if (!passesModelAllowlist(autoCombo.id, visibleFilter, hiddenFilter)) continue;
     if (usable && !isUsableRawModelId(autoCombo.id, usable)) continue;
+    if (!passesProviderAutoCombo(autoCombo, providerFilter, providerResolve)) {
+      providerDroppedCount += 1;
+      continue;
+    }
     const mapped = mapAutoComboToModelV2(autoCombo, X, opts.baseURL, opts.apiFormat);
     applyEnrichment(mapped, lookupEnrichment(autoCombo.id, enrichment, canonicalToAlias), {
       isCombo: true,
@@ -813,7 +888,28 @@ export async function collectCatalog(
     autoComboCount += 1;
   }
 
-  return { entries: collected, counts: { models: modelCount, combos: comboCount, autoCombos: autoComboCount } };
+  if (providerFilter && collected.size === 0 && providerDroppedCount > 0) {
+    warnProviderMatchedNothing(providerFilter, providerWarned, log);
+  }
+
+  return {
+    entries: collected,
+    counts: { models: modelCount, combos: comboCount, autoCombos: autoComboCount },
+  };
+}
+
+function warnProviderMatchedNothing(
+  providerFilter: ProviderFilter | undefined,
+  warnedCombos: Set<string>,
+  log: Logger
+): void {
+  if (!providerFilter) return;
+  const key = `provider-matched-nothing::${[...providerFilter.allow].sort().join(",")}`;
+  if (warnedCombos.has(key)) return;
+  warnedCombos.add(key);
+  log.warn(
+    `[omniroute-v2] providersAllow [${providerFilter.originals.join(", ")}] matched nothing, publishing empty catalog.`
+  );
 }
 
 /**
@@ -876,7 +972,10 @@ export async function publishCatalog(
     const settings = (info.settings ?? {}) as Record<string, unknown>;
     const npm = String(info.package ?? "").replace("@opencode/ai/providers/", "@ai-sdk/");
     p["api"] = { type: "aisdk", package: npm, url: settings["baseURL"] };
-    p["request"] = { headers: (info.headers ?? {}) as Record<string, string>, body: (info.body ?? {}) as Record<string, unknown> };
+    p["request"] = {
+      headers: (info.headers ?? {}) as Record<string, string>,
+      body: (info.body ?? {}) as Record<string, unknown>,
+    };
   });
   for (const m of collected.entries.keys()) {
     const slash = m.indexOf("/");
