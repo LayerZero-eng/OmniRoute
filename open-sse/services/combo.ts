@@ -236,16 +236,38 @@ const BOOTSTRAP_WARN_WINDOW_MS = 3600_000;
 export let bootstrapLatencyHits = 0; // exported for testability (reset in tests)
 export let bootstrapLatencyTotal = 0;
 let bootstrapWarnedAt = 0;
+let lastBootstrapSource: "table" | "pool-median" | "constant" | "none" = "none";
 export function resetBootstrapCounters(): void {
   bootstrapLatencyHits = 0;
   bootstrapLatencyTotal = 0;
   bootstrapWarnedAt = 0;
+  lastBootstrapSource = "none";
+}
+// Single table lookup shared by bootstrapMs and bootstrapSource. Exact
+// normalization only (no provider/ prefix strip): callers pass parsed.model,
+// so stripping here would be dead code. Pricing strips prefixes; combo does not.
+function lookupTable(model: string): number | undefined {
+  return DEFAULT_MODEL_P95_MS[String(model || "").toLowerCase()];
+}
+// Pure provenance helper: no counter effects. Reference semantics only;
+// the hot path (bootstrapMs) never calls it.
+export function bootstrapSource(
+  model: string,
+  poolMedian: number | undefined
+): "table" | "pool-median" | "constant" {
+  if (lookupTable(model) !== undefined) return "table";
+  if (poolMedian !== undefined) return "pool-median";
+  return "constant";
 }
 export function bootstrapMs(model: string, poolMedian: number | undefined): number {
   bootstrapLatencyTotal++;
-  const table = DEFAULT_MODEL_P95_MS[String(model || "").toLowerCase()];
-  if (table !== undefined) return table;
+  const table = lookupTable(model);
+  if (table !== undefined) {
+    lastBootstrapSource = "table";
+    return table;
+  }
   bootstrapLatencyHits++;
+  lastBootstrapSource = poolMedian !== undefined ? "pool-median" : "constant";
   return poolMedian ?? 1500;
 }
 
@@ -275,7 +297,7 @@ function maybeWarnBootstrapDominant(hasStats: boolean): void {
     return;
   bootstrapWarnedAt = Date.now();
   console.warn(
-    `[combo] bootstrap latency dominant (${bootstrapLatencyHits}/${bootstrapLatencyTotal}) — scoring runs on guesses`
+    `[combo] bootstrap latency dominant (${bootstrapLatencyHits}/${bootstrapLatencyTotal}, source: ${lastBootstrapSource}) - scoring runs on guesses`
   );
 }
 
