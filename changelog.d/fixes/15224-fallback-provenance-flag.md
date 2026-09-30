@@ -1,0 +1,1 @@
+- **fix(routing):** unknown models now carry a provenance flag on pricing and latency bootstrap fallbacks, so guesses are traceable instead of silent.

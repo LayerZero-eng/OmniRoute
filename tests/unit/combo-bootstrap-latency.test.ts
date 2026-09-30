@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import {
   poolMedianP95Ms,
   bootstrapMs,
+  bootstrapSource,
   shouldWarnBootstrap,
   resetBootstrapCounters,
   bootstrapLatencyHits,
@@ -42,6 +43,13 @@ test("table hit bumps Total but not Hits; miss bumps both", () => {
   assert.equal(bootstrapLatencyHits, 1);
   assert.equal(bootstrapMs("another-new-model", undefined), 1500); // miss, no median
   resetBootstrapCounters();
+});
+
+test("bootstrap source traces table, pool median, and constant fallbacks", () => {
+  assert.equal(bootstrapSource("gpt-4o-mini", 9999), "table");
+  assert.equal(bootstrapSource("some-new-model-xyz", 1234), "pool-median");
+  assert.equal(bootstrapSource("another-new-model", undefined), "constant");
+  assert.equal(bootstrapSource("", undefined), "constant");
 });
 
 test("warn gate is pure: cold start and low ratio stay silent, dominant warns once", () => {
