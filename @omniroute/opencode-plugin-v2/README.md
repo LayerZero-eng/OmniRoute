@@ -114,6 +114,7 @@ catalog is never a mystery.
 | `geminiSanitization`             | `true`                                                     | Strip `$schema`/`additionalProperties` from tool schemas sent to Gemini models (`$ref` tools are forwarded untouched) |
 | `usableOnly`                     | `false`                                                    | Filter to healthy provisioned providers (`/api/providers`)                                                            |
 | `visibleModels` / `hiddenModels` | `[]`                                                       | Exact-or-suffix allowlists, deny wins                                                                                 |
+| `providersAllow`                 | `[]`                                                       | Provider allowlist by id prefix (empty = full catalog); unknown names warn once, empty result publishes empty + warns |
 | `apiFormat.allowAnthropic`       | `false`                                                    | Route allowlisted ids to the Anthropic API block                                                                      |
 | `apiFormat.anthropicModels`      | `[]`                                                       | Full model ids routed to Anthropic                                                                                    |
 | `apiFormat.anthropicPrefixes`    | v1 defaults                                                | Deprecated, warns once — prefer `anthropicModels`                                                                     |
